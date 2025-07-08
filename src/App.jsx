@@ -108,6 +108,7 @@ const App = () => {
   const [permissionStatus, setPermissionStatus] = useState("unknown");
   const [error, setError] = useState(null);
   const [isTestMode, setIsTestMode] = useState(false);
+  const [geoJsonLoaded, setGeoJsonLoaded] = useState(false);
   const watchId = useRef(null);
 
   // Test location within one of the polygons
@@ -115,27 +116,6 @@ const App = () => {
     lat: 16.6955,
     lng: 74.2445,
     accuracy: 10,
-  };
-
-  // Set test location
-  const setTestLocation = () => {
-    setIsTestMode(true);
-    setPosition(testLocation);
-    setError(null);
-    addToast("Test location set (inside zones)", "info");
-
-    // Check polygon containment for test location
-    const polygonIndex = checkPolygonContainment(
-      testLocation.lat,
-      testLocation.lng,
-    );
-    setCurrentPolygon(polygonIndex);
-
-    if (polygonIndex !== null) {
-      addToast(`Test location is in Zone ${polygonIndex + 1}`, "success");
-    } else {
-      addToast("Test location is outside all zones", "warning");
-    }
   };
 
   // Toast functions
@@ -151,78 +131,6 @@ const App = () => {
   const removeToast = (id) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   };
-
-  // Load GeoJSON data
-  useEffect(() => {
-    const loadGeoJson = () => {
-      try {
-        // Embedded GeoJSON data from the uploaded file
-        const data = {
-          type: "FeatureCollection",
-          features: [
-            {
-              type: "Feature",
-              properties: {},
-              geometry: {
-                coordinates: [
-                  [
-                    [74.24006611534955, 16.69505639266292],
-                    [74.2404150186068, 16.694480831953754],
-                    [74.24873054623046, 16.696281774203882],
-                    [74.2485754781163, 16.69691302829385],
-                    [74.24006611534955, 16.69505639266292],
-                  ],
-                ],
-                type: "Polygon",
-              },
-            },
-            {
-              type: "Feature",
-              properties: {},
-              geometry: {
-                coordinates: [
-                  [
-                    [74.24039407113312, 16.69449486015705],
-                    [74.24095213390189, 16.694002243787253],
-                    [74.24888537912818, 16.695794522781497],
-                    [74.24873218542578, 16.696276653441714],
-                    [74.24039407113312, 16.69449486015705],
-                  ],
-                ],
-                type: "Polygon",
-              },
-            },
-            {
-              type: "Feature",
-              properties: {},
-              geometry: {
-                coordinates: [
-                  [
-                    [74.24095213390189, 16.694002243787253],
-                    [74.24161962074032, 16.693488663666102],
-                    [74.24906045764351, 16.695239022902655],
-                    [74.24888537912818, 16.695805003895018],
-                    [74.24095213390189, 16.694002243787253],
-                  ],
-                ],
-                type: "Polygon",
-              },
-            },
-          ],
-        };
-
-        setGeoJsonData(data);
-        console.log("GeoJSON loaded:", data);
-        addToast("Zone data loaded successfully", "success");
-      } catch (error) {
-        console.error("Error loading GeoJSON:", error);
-        setError("Failed to load GeoJSON data");
-        addToast("Failed to load zone data", "error");
-      }
-    };
-
-    loadGeoJson();
-  }, []);
 
   // Check which polygon contains the point
   const checkPolygonContainment = (lat, lng) => {
@@ -242,6 +150,49 @@ const App = () => {
     return null; // Outside all polygons
   };
 
+  // Update polygon status when position or geoJSON changes
+  const updatePolygonStatus = (positionData) => {
+    if (!positionData || !geoJsonLoaded) return;
+
+    const polygonIndex = checkPolygonContainment(
+      positionData.lat,
+      positionData.lng,
+    );
+
+    // Only update if there's a change
+    if (polygonIndex !== currentPolygon) {
+      const prevPolygon = currentPolygon;
+      setCurrentPolygon(polygonIndex);
+
+      // Generate appropriate toast message
+      if (polygonIndex === null) {
+        if (prevPolygon !== null) {
+          addToast(`You have exited Zone ${prevPolygon + 1}`, "warning");
+        } else if (geoJsonLoaded) {
+          addToast("You are outside the monitored zones", "info");
+        }
+      } else {
+        if (prevPolygon === null) {
+          addToast(`You have entered Zone ${polygonIndex + 1}`, "success");
+        } else {
+          addToast(
+            `You moved from Zone ${prevPolygon + 1} to Zone ${polygonIndex + 1}`,
+            "info",
+          );
+        }
+      }
+    }
+  };
+
+  // Set test location
+  const setTestLocation = () => {
+    setIsTestMode(true);
+    setPosition(testLocation);
+    setError(null);
+    addToast("Test location set (inside zones)", "info");
+    updatePolygonStatus(testLocation);
+  };
+
   // Handle position updates
   const handlePositionUpdate = (position) => {
     const newPosition = {
@@ -258,36 +209,7 @@ const App = () => {
     });
 
     setPosition(newPosition);
-
-    // Check polygon containment
-    const polygonIndex = checkPolygonContainment(
-      newPosition.lat,
-      newPosition.lng,
-    );
-
-    // Compare with previous state
-    if (polygonIndex !== previousPolygon) {
-      setPreviousPolygon(currentPolygon);
-      setCurrentPolygon(polygonIndex);
-
-      // Generate appropriate toast message
-      if (polygonIndex === null) {
-        if (previousPolygon !== null) {
-          addToast(`You have exited Zone ${previousPolygon + 1}`, "warning");
-        } else {
-          addToast("You are outside the monitored zones", "info");
-        }
-      } else {
-        if (previousPolygon === null) {
-          addToast(`You have entered Zone ${polygonIndex + 1}`, "success");
-        } else {
-          addToast(
-            `You moved from Zone ${previousPolygon + 1} to Zone ${polygonIndex + 1}`,
-            "info",
-          );
-        }
-      }
-    }
+    updatePolygonStatus(newPosition);
   };
 
   // Handle geolocation errors
@@ -374,6 +296,93 @@ const App = () => {
     );
   };
 
+  // Load GeoJSON data
+  useEffect(() => {
+    const loadGeoJson = () => {
+      try {
+        // Embedded GeoJSON data from the uploaded file
+        const data = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                coordinates: [
+                  [
+                    [74.24006611534955, 16.69505639266292],
+                    [74.2404150186068, 16.694480831953754],
+                    [74.24873054623046, 16.696281774203882],
+                    [74.2485754781163, 16.69691302829385],
+                    [74.24006611534955, 16.69505639266292],
+                  ],
+                ],
+                type: "Polygon",
+              },
+            },
+            {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                coordinates: [
+                  [
+                    [74.24039407113312, 16.69449486015705],
+                    [74.24095213390189, 16.694002243787253],
+                    [74.24888537912818, 16.695794522781497],
+                    [74.24873218542578, 16.696276653441714],
+                    [74.24039407113312, 16.69449486015705],
+                  ],
+                ],
+                type: "Polygon",
+              },
+            },
+            {
+              type: "Feature",
+              properties: {},
+              geometry: {
+                coordinates: [
+                  [
+                    [74.24095213390189, 16.694002243787253],
+                    [74.24161962074032, 16.693488663666102],
+                    [74.24906045764351, 16.695239022902655],
+                    [74.24888537912818, 16.695805003895018],
+                    [74.24095213390189, 16.694002243787253],
+                  ],
+                ],
+                type: "Polygon",
+              },
+            },
+          ],
+        };
+
+        setGeoJsonData(data);
+        setGeoJsonLoaded(true);
+        console.log("GeoJSON loaded:", data);
+        addToast("Zone data loaded successfully", "success");
+      } catch (error) {
+        console.error("Error loading GeoJSON:", error);
+        setError("Failed to load GeoJSON data");
+        addToast("Failed to load zone data", "error");
+      }
+    };
+
+    loadGeoJson();
+  }, []);
+
+  // Check polygon status when both position and geoJSON are available
+  useEffect(() => {
+    if (position && geoJsonLoaded) {
+      updatePolygonStatus(position);
+    }
+  }, [position, geoJsonLoaded]);
+
+  // Start location tracking after GeoJSON is loaded
+  useEffect(() => {
+    if (geoJsonLoaded) {
+      requestLocationPermission();
+    }
+  }, [geoJsonLoaded]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -381,11 +390,6 @@ const App = () => {
         navigator.geolocation.clearWatch(watchId.current);
       }
     };
-  }, []);
-
-  // Start location tracking on mount
-  useEffect(() => {
-    requestLocationPermission();
   }, []);
 
   // GeoJSON style
