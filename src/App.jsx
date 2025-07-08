@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import {
   MapContainer,
   TileLayer,
@@ -6,6 +12,7 @@ import {
   Popup,
   GeoJSON,
   useMap,
+  Circle,
 } from "react-leaflet";
 import * as turf from "@turf/turf";
 import "leaflet/dist/leaflet.css";
@@ -22,14 +29,16 @@ L.Icon.Default.mergeOptions({
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png",
 });
 
-// Create a custom icon for current location
-const createLocationIcon = () => {
+// Enhanced location icon with accuracy indicator
+const createLocationIcon = (accuracy) => {
+  const color =
+    accuracy < 20 ? "#10b981" : accuracy < 50 ? "#f59e0b" : "#ef4444";
   return L.divIcon({
     html: `
       <div style="
         width: 20px;
         height: 20px;
-        background: #3b82f6;
+        background: ${color};
         border: 3px solid white;
         border-radius: 50%;
         box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -49,13 +58,20 @@ const createLocationIcon = () => {
   });
 };
 
-// Toast component
+// Enhanced Toast component with auto-cleanup
 const Toast = ({ message, type, onClose }) => {
+  const timeoutRef = useRef(null);
+
   useEffect(() => {
-    const timer = setTimeout(() => {
+    timeoutRef.current = setTimeout(() => {
       onClose();
     }, 4000);
-    return () => clearTimeout(timer);
+
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
   }, [onClose]);
 
   return (
@@ -68,7 +84,7 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
-// Toast Container
+// Toast Container with improved management
 const ToastContainer = ({ toasts, removeToast }) => {
   return (
     <div className="toast-container">
@@ -84,13 +100,40 @@ const ToastContainer = ({ toasts, removeToast }) => {
   );
 };
 
-// Component to handle map updates
+// Loading indicator component
+const LoadingIndicator = ({ message }) => (
+  <div className="loading-indicator">
+    <div className="spinner"></div>
+    <span>{message}</span>
+  </div>
+);
+
+// Component to handle map updates with smooth transitions
 const MapController = ({ position, setMap }) => {
   const map = useMap();
+  const prevPositionRef = useRef(null);
 
   useEffect(() => {
-    if (position) {
-      map.setView([position.lat, position.lng], 16);
+    if (position && map) {
+      const prevPosition = prevPositionRef.current;
+
+      // Smooth pan if position changed significantly
+      if (prevPosition) {
+        const distance = turf.distance(
+          [prevPosition.lng, prevPosition.lat],
+          [position.lng, position.lat],
+          { units: "meters" },
+        );
+
+        if (distance > 50) {
+          // Only pan if moved more than 50m
+          map.panTo([position.lat, position.lng]);
+        }
+      } else {
+        map.setView([position.lat, position.lng], 16);
+      }
+
+      prevPositionRef.current = position;
     }
     setMap(map);
   }, [position, map, setMap]);
@@ -98,18 +141,96 @@ const MapController = ({ position, setMap }) => {
   return null;
 };
 
+// Enhanced location filter class
+class LocationFilter {
+  constructor() {
+    this.readings = [];
+    this.maxReadings = 5;
+    this.accuracyThreshold = 100; // meters
+  }
+
+  addReading(position) {
+    this.readings.push({
+      ...position,
+      timestamp: Date.now(),
+    });
+
+    // Keep only recent readings
+    if (this.readings.length > this.maxReadings) {
+      this.readings.shift();
+    }
+
+    // Clean old readings (older than 30 seconds)
+    const now = Date.now();
+    this.readings = this.readings.filter((r) => now - r.timestamp < 30000);
+  }
+
+  getFilteredPosition() {
+    if (this.readings.length === 0) return null;
+
+    // Filter out readings with poor accuracy
+    const goodReadings = this.readings.filter(
+      (r) => r.accuracy <= this.accuracyThreshold,
+    );
+
+    if (goodReadings.length === 0) {
+      // If no good readings, use the best available
+      const bestReading = this.readings.reduce((best, current) =>
+        current.accuracy < best.accuracy ? current : best,
+      );
+      return bestReading;
+    }
+
+    // Use weighted average based on accuracy (better accuracy = higher weight)
+    let totalWeight = 0;
+    let weightedLat = 0;
+    let weightedLng = 0;
+    let bestAccuracy = Math.min(...goodReadings.map((r) => r.accuracy));
+
+    goodReadings.forEach((reading) => {
+      const weight = 1 / (reading.accuracy + 1); // Higher weight for better accuracy
+      totalWeight += weight;
+      weightedLat += reading.lat * weight;
+      weightedLng += reading.lng * weight;
+    });
+
+    return {
+      lat: weightedLat / totalWeight,
+      lng: weightedLng / totalWeight,
+      accuracy: bestAccuracy,
+      timestamp: Date.now(),
+    };
+  }
+
+  getAccuracyQuality() {
+    const filtered = this.getFilteredPosition();
+    if (!filtered) return "unknown";
+
+    if (filtered.accuracy < 20) return "excellent";
+    if (filtered.accuracy < 50) return "good";
+    if (filtered.accuracy < 100) return "fair";
+    return "poor";
+  }
+}
+
 const App = () => {
   const [position, setPosition] = useState(null);
+  const [rawPosition, setRawPosition] = useState(null);
   const [geoJsonData, setGeoJsonData] = useState(null);
   const [currentPolygon, setCurrentPolygon] = useState(null);
-  const [previousPolygon, setPreviousPolygon] = useState(null);
   const [map, setMap] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [permissionStatus, setPermissionStatus] = useState("unknown");
   const [error, setError] = useState(null);
   const [isTestMode, setIsTestMode] = useState(false);
   const [geoJsonLoaded, setGeoJsonLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [accuracyQuality, setAccuracyQuality] = useState("unknown");
+  const [locationHistory, setLocationHistory] = useState([]);
+
   const watchId = useRef(null);
+  const locationFilter = useRef(new LocationFilter());
+  const toastIdCounter = useRef(0);
 
   // Test location within one of the polygons
   const testLocation = {
@@ -118,134 +239,188 @@ const App = () => {
     accuracy: 10,
   };
 
-  // Toast functions
-  const addToast = (message, type = "info") => {
+  // Enhanced geolocation options for mobile
+  const geoOptions = useMemo(
+    () => ({
+      enableHighAccuracy: true,
+      timeout: 15000, // Increased timeout for mobile
+      maximumAge: 5000, // Reduced max age for fresher readings
+    }),
+    [],
+  );
+
+  const watchOptions = useMemo(
+    () => ({
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 2000, // Very fresh readings for continuous tracking
+    }),
+    [],
+  );
+
+  // Toast functions with improved management
+  const addToast = useCallback((message, type = "info") => {
     const newToast = {
-      id: Date.now() + Math.random(),
+      id: ++toastIdCounter.current,
       message,
       type,
     };
     setToasts((prev) => [...prev, newToast]);
-  };
+  }, []);
 
-  const removeToast = (id) => {
+  const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
-  };
+  }, []);
 
-  // Check which polygon contains the point
-  const checkPolygonContainment = (lat, lng) => {
-    if (!geoJsonData || !geoJsonData.features) return null;
+  // Memoized polygon checking function
+  const checkPolygonContainment = useCallback(
+    (lat, lng) => {
+      if (!geoJsonData?.features) return null;
 
-    const point = turf.point([lng, lat]);
+      const point = turf.point([lng, lat]);
 
-    for (let i = 0; i < geoJsonData.features.length; i++) {
-      const feature = geoJsonData.features[i];
-      if (feature.geometry.type === "Polygon") {
-        const polygon = turf.polygon(feature.geometry.coordinates);
-        if (turf.booleanPointInPolygon(point, polygon)) {
-          return i; // Return polygon index
+      for (let i = 0; i < geoJsonData.features.length; i++) {
+        const feature = geoJsonData.features[i];
+        if (feature.geometry.type === "Polygon") {
+          try {
+            const polygon = turf.polygon(feature.geometry.coordinates);
+            if (turf.booleanPointInPolygon(point, polygon)) {
+              return i;
+            }
+          } catch (error) {
+            console.error(`Error checking polygon ${i}:`, error);
+          }
         }
       }
-    }
-    return null; // Outside all polygons
-  };
+      return null;
+    },
+    [geoJsonData],
+  );
 
-  // Update polygon status when position or geoJSON changes
-  const updatePolygonStatus = (positionData) => {
-    if (!positionData || !geoJsonLoaded) return;
+  // Enhanced polygon status update with debouncing
+  const updatePolygonStatus = useCallback(
+    (positionData) => {
+      if (!positionData || !geoJsonLoaded) return;
 
-    const polygonIndex = checkPolygonContainment(
-      positionData.lat,
-      positionData.lng,
-    );
+      const polygonIndex = checkPolygonContainment(
+        positionData.lat,
+        positionData.lng,
+      );
 
-    // Only update if there's a change
-    if (polygonIndex !== currentPolygon) {
-      const prevPolygon = currentPolygon;
-      setCurrentPolygon(polygonIndex);
+      if (polygonIndex !== currentPolygon) {
+        const prevPolygon = currentPolygon;
+        setCurrentPolygon(polygonIndex);
 
-      // Generate appropriate toast message
-      if (polygonIndex === null) {
-        if (prevPolygon !== null) {
-          addToast(`You have exited Zone ${prevPolygon + 1}`, "warning");
-        } else if (geoJsonLoaded) {
-          addToast("You are outside the monitored zones", "info");
-        }
-      } else {
-        if (prevPolygon === null) {
-          addToast(`You have entered Zone ${polygonIndex + 1}`, "success");
+        // Generate appropriate toast message
+        if (polygonIndex === null) {
+          if (prevPolygon !== null) {
+            addToast(`You have exited Zone ${prevPolygon + 1}`, "warning");
+          } else if (geoJsonLoaded && prevPolygon !== null) {
+            addToast("You are outside the monitored zones", "info");
+          }
         } else {
-          addToast(
-            `You moved from Zone ${prevPolygon + 1} to Zone ${polygonIndex + 1}`,
-            "info",
-          );
+          if (prevPolygon === null) {
+            addToast(`You have entered Zone ${polygonIndex + 1}`, "success");
+          } else if (prevPolygon !== polygonIndex) {
+            addToast(
+              `You moved from Zone ${prevPolygon + 1} to Zone ${polygonIndex + 1}`,
+              "info",
+            );
+          }
         }
       }
-    }
-  };
+    },
+    [currentPolygon, geoJsonLoaded, checkPolygonContainment, addToast],
+  );
 
-  // Set test location
-  const setTestLocation = () => {
-    setIsTestMode(true);
-    setPosition(testLocation);
-    setError(null);
-    addToast("Test location set (inside zones)", "info");
-    updatePolygonStatus(testLocation);
-  };
+  // Enhanced position update handler
+  const handlePositionUpdate = useCallback(
+    (positionData) => {
+      const newPosition = {
+        lat: positionData.coords.latitude,
+        lng: positionData.coords.longitude,
+        accuracy: positionData.coords.accuracy,
+        timestamp: positionData.timestamp,
+      };
 
-  // Handle position updates
-  const handlePositionUpdate = (position) => {
-    const newPosition = {
-      lat: position.coords.latitude,
-      lng: position.coords.longitude,
-      accuracy: position.coords.accuracy,
-    };
+      console.log("Raw position update:", {
+        lat: newPosition.lat,
+        lng: newPosition.lng,
+        accuracy: newPosition.accuracy,
+        timestamp: new Date(newPosition.timestamp).toISOString(),
+      });
 
-    console.log("Position update:", {
-      lat: newPosition.lat,
-      lng: newPosition.lng,
-      accuracy: newPosition.accuracy,
-      timestamp: new Date().toISOString(),
-    });
+      // Store raw position for debugging
+      setRawPosition(newPosition);
 
-    setPosition(newPosition);
-    updatePolygonStatus(newPosition);
-  };
+      // Add to location history
+      setLocationHistory((prev) => [...prev.slice(-19), newPosition]); // Keep last 20 positions
 
-  // Handle geolocation errors
-  const handleError = (error) => {
-    console.error("Geolocation error:", error);
-    let message = "Location access failed";
+      // Add to filter
+      locationFilter.current.addReading(newPosition);
 
-    switch (error.code) {
-      case error.PERMISSION_DENIED:
-        message = "Location access denied by user";
-        setPermissionStatus("denied");
-        break;
-      case error.POSITION_UNAVAILABLE:
-        message = "Location information is unavailable";
-        break;
-      case error.TIMEOUT:
-        message = "Location request timed out";
-        break;
-      default:
-        message = "An unknown error occurred";
-    }
+      // Get filtered position
+      const filteredPosition = locationFilter.current.getFilteredPosition();
 
-    setError(message);
-    addToast(message, "error");
-  };
+      if (filteredPosition) {
+        setPosition(filteredPosition);
+        setAccuracyQuality(locationFilter.current.getAccuracyQuality());
+        updatePolygonStatus(filteredPosition);
+      }
 
-  // Request location permission and start watching
-  const requestLocationPermission = async () => {
+      setIsLoading(false);
+    },
+    [updatePolygonStatus],
+  );
+
+  // Enhanced error handling
+  const handleError = useCallback(
+    (error) => {
+      console.error("Geolocation error:", error);
+      setIsLoading(false);
+
+      let message = "Location access failed";
+      let suggestion = "";
+
+      switch (error.code) {
+        case error.PERMISSION_DENIED:
+          message = "Location access denied";
+          suggestion = "Please enable location in browser settings";
+          setPermissionStatus("denied");
+          break;
+        case error.POSITION_UNAVAILABLE:
+          message = "Location unavailable";
+          suggestion = "Check GPS signal or try moving to open area";
+          break;
+        case error.TIMEOUT:
+          message = "Location request timed out";
+          suggestion = "Poor signal. Trying again...";
+          // Auto-retry on timeout
+          setTimeout(() => requestLocationPermission(), 2000);
+          break;
+        default:
+          message = "Unknown location error";
+      }
+
+      setError(message);
+      addToast(`${message}. ${suggestion}`, "error");
+    },
+    [addToast],
+  );
+
+  // Enhanced location permission request
+  const requestLocationPermission = useCallback(async () => {
     if (!navigator.geolocation) {
-      const message = "Geolocation is not supported by this browser";
+      const message = "Geolocation not supported";
       setError(message);
       addToast(message, "error");
       return;
     }
 
-    // Check if permission API is available
+    setIsLoading(true);
+    setError(null);
+
+    // Check permission status
     if (navigator.permissions) {
       try {
         const permission = await navigator.permissions.query({
@@ -254,59 +429,62 @@ const App = () => {
         setPermissionStatus(permission.state);
 
         if (permission.state === "denied") {
+          setIsLoading(false);
           const message =
-            "Location permission denied. Please enable location access in your browser settings.";
+            "Location permission denied. Please enable in browser settings.";
           setError(message);
           addToast(message, "error");
           return;
         }
       } catch (error) {
-        console.log("Permission API not fully supported:", error);
+        console.log("Permission API not supported:", error);
       }
     }
 
-    // Request current position first
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setError(null);
-        setPermissionStatus("granted");
-        handlePositionUpdate(position);
-      },
-      handleError,
-      {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0,
-      },
-    );
-
-    // Start watching position
+    // Clear existing watch
     if (watchId.current) {
       navigator.geolocation.clearWatch(watchId.current);
     }
 
+    // Get initial position
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setPermissionStatus("granted");
+        handlePositionUpdate(position);
+        addToast("Location tracking started", "success");
+      },
+      handleError,
+      geoOptions,
+    );
+
+    // Start continuous watching
     watchId.current = navigator.geolocation.watchPosition(
       handlePositionUpdate,
       handleError,
-      {
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 30000,
-      },
+      watchOptions,
     );
-  };
+  }, [handlePositionUpdate, handleError, geoOptions, watchOptions, addToast]);
+
+  // Test location function
+  const setTestLocation = useCallback(() => {
+    setIsTestMode(true);
+    setPosition(testLocation);
+    setError(null);
+    setIsLoading(false);
+    addToast("Test location activated", "info");
+    updatePolygonStatus(testLocation);
+  }, [addToast, updatePolygonStatus]);
 
   // Load GeoJSON data
   useEffect(() => {
     const loadGeoJson = () => {
       try {
-        // Embedded GeoJSON data from the uploaded file
         const data = {
           type: "FeatureCollection",
           features: [
             {
               type: "Feature",
-              properties: {},
+              properties: { name: "Zone 1" },
               geometry: {
                 coordinates: [
                   [
@@ -322,7 +500,7 @@ const App = () => {
             },
             {
               type: "Feature",
-              properties: {},
+              properties: { name: "Zone 2" },
               geometry: {
                 coordinates: [
                   [
@@ -338,7 +516,7 @@ const App = () => {
             },
             {
               type: "Feature",
-              properties: {},
+              properties: { name: "Zone 3" },
               geometry: {
                 coordinates: [
                   [
@@ -357,31 +535,24 @@ const App = () => {
 
         setGeoJsonData(data);
         setGeoJsonLoaded(true);
-        console.log("GeoJSON loaded:", data);
-        addToast("Zone data loaded successfully", "success");
+        console.log("GeoJSON loaded successfully");
+        addToast("Zone data loaded", "success");
       } catch (error) {
         console.error("Error loading GeoJSON:", error);
-        setError("Failed to load GeoJSON data");
+        setError("Failed to load zone data");
         addToast("Failed to load zone data", "error");
       }
     };
 
     loadGeoJson();
-  }, []);
+  }, [addToast]);
 
-  // Check polygon status when both position and geoJSON are available
+  // Start location tracking after GeoJSON loads
   useEffect(() => {
-    if (position && geoJsonLoaded) {
-      updatePolygonStatus(position);
-    }
-  }, [position, geoJsonLoaded]);
-
-  // Start location tracking after GeoJSON is loaded
-  useEffect(() => {
-    if (geoJsonLoaded) {
+    if (geoJsonLoaded && !isTestMode) {
       requestLocationPermission();
     }
-  }, [geoJsonLoaded]);
+  }, [geoJsonLoaded, isTestMode, requestLocationPermission]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -392,24 +563,40 @@ const App = () => {
     };
   }, []);
 
-  // GeoJSON style
-  const geoJsonStyle = (feature) => {
-    return {
-      color: "#3388ff",
-      weight: 3,
-      opacity: 0.8,
-      fillOpacity: 0.2,
-      fillColor: "#3388ff",
-    };
-  };
+  // GeoJSON styling function
+  const geoJsonStyle = useCallback(
+    (feature) => {
+      const index = geoJsonData?.features?.indexOf(feature) || 0;
+      const colors = ["#3388ff", "#ff6b6b", "#4ecdc4"];
 
-  // Popup content for each feature
-  const onEachFeature = (feature, layer) => {
-    const index = geoJsonData.features.indexOf(feature);
-    layer.bindPopup(`Zone ${index + 1}`);
-  };
+      return {
+        color: colors[index % colors.length],
+        weight: 3,
+        opacity: 0.8,
+        fillOpacity: 0.2,
+        fillColor: colors[index % colors.length],
+      };
+    },
+    [geoJsonData],
+  );
 
-  const defaultCenter = [16.695, 74.244]; // Default to the area of the GeoJSON
+  // Enhanced popup content
+  const onEachFeature = useCallback(
+    (feature, layer) => {
+      const index = geoJsonData?.features?.indexOf(feature) || 0;
+      const zoneName = feature.properties?.name || `Zone ${index + 1}`;
+      layer.bindPopup(`<strong>${zoneName}</strong><br/>Monitoring Area`);
+    },
+    [geoJsonData],
+  );
+
+  const defaultCenter = [16.695, 74.244];
+
+  const getAccuracyColor = (accuracy) => {
+    if (accuracy < 20) return "#10b981";
+    if (accuracy < 50) return "#f59e0b";
+    return "#ef4444";
+  };
 
   return (
     <div className="app">
@@ -419,14 +606,21 @@ const App = () => {
           <span
             className={`status-indicator ${permissionStatus === "granted" ? "granted" : "denied"}`}
           >
-            {permissionStatus === "granted"
-              ? "● Location Active"
-              : "● Location Disabled"}
+            {isLoading
+              ? "⏳ Loading..."
+              : permissionStatus === "granted"
+                ? "● Location Active"
+                : "● Location Disabled"}
           </span>
-          {currentPolygon !== null ? (
-            <span className="zone-status">In Zone {currentPolygon + 1}</span>
-          ) : (
-            <span className="zone-status">Outside Zone</span>
+          <span className="zone-status">
+            {currentPolygon !== null
+              ? `In Zone ${currentPolygon + 1}`
+              : "Outside Zone"}
+          </span>
+          {position && (
+            <span className={`accuracy-indicator ${accuracyQuality}`}>
+              {accuracyQuality} ({Math.round(position.accuracy)}m)
+            </span>
           )}
         </div>
       </div>
@@ -439,20 +633,20 @@ const App = () => {
               onClick={requestLocationPermission}
               className="retry-button"
             >
-              Retry Location Access
+              Retry Location
             </button>
             <button onClick={setTestLocation} className="test-button">
               Use Test Location
             </button>
           </div>
           <small>
-            Note: Desktop/laptop location is often inaccurate.
-            {navigator.userAgent.includes("Mobile")
-              ? " Mobile devices provide better GPS accuracy."
-              : " Try on mobile for better results."}
+            For best results: Enable high accuracy GPS, ensure good signal, and
+            use on mobile device.
           </small>
         </div>
       )}
+
+      {isLoading && <LoadingIndicator message="Getting your location..." />}
 
       <div className="map-container">
         <MapContainer
@@ -468,39 +662,54 @@ const App = () => {
           <MapController position={position} setMap={setMap} />
 
           {position && (
-            <Marker
-              position={[position.lat, position.lng]}
-              icon={createLocationIcon()}
-            >
-              <Popup>
-                <div>
-                  <strong>Your Location</strong>
-                  <br />
-                  Lat: {position.lat.toFixed(6)}
-                  <br />
-                  Lng: {position.lng.toFixed(6)}
-                  <br />
-                  Accuracy:{" "}
-                  {position.accuracy
-                    ? `${Math.round(position.accuracy)}m`
-                    : "Unknown"}
-                  <br />
-                  Status:{" "}
-                  {currentPolygon !== null
-                    ? `In Zone ${currentPolygon + 1}`
-                    : "Outside Zone"}
-                  <br />
-                  <small>
-                    Device:{" "}
-                    {/Mobi|Android/i.test(navigator.userAgent)
-                      ? "Mobile"
-                      : "Desktop"}
-                  </small>
-                  {isTestMode && <br />}
-                  <small>{isTestMode ? "Test Location" : ""}</small>
-                </div>
-              </Popup>
-            </Marker>
+            <>
+              <Marker
+                position={[position.lat, position.lng]}
+                icon={createLocationIcon(position.accuracy)}
+              >
+                <Popup>
+                  <div>
+                    <strong>Your Location</strong>
+                    <br />
+                    Lat: {position.lat.toFixed(6)}
+                    <br />
+                    Lng: {position.lng.toFixed(6)}
+                    <br />
+                    Accuracy: {Math.round(position.accuracy)}m
+                    <br />
+                    Quality:{" "}
+                    <span className={`quality-${accuracyQuality}`}>
+                      {accuracyQuality}
+                    </span>
+                    <br />
+                    Status:{" "}
+                    {currentPolygon !== null
+                      ? `In Zone ${currentPolygon + 1}`
+                      : "Outside Zone"}
+                    <br />
+                    Readings: {locationHistory.length}
+                    {isTestMode && (
+                      <>
+                        <br />
+                        <small>
+                          <strong>Test Mode Active</strong>
+                        </small>
+                      </>
+                    )}
+                  </div>
+                </Popup>
+              </Marker>
+
+              {/* Accuracy circle */}
+              <Circle
+                center={[position.lat, position.lng]}
+                radius={position.accuracy}
+                color={getAccuracyColor(position.accuracy)}
+                fillColor={getAccuracyColor(position.accuracy)}
+                fillOpacity={0.1}
+                weight={1}
+              />
+            </>
           )}
 
           {geoJsonData && (
@@ -519,3 +728,95 @@ const App = () => {
 };
 
 export default App;
+
+// Enhanced CSS styles for the improved components
+const styles = `
+/* Additional styles for enhanced components */
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 1rem;
+  background: #f0f9ff;
+  border-bottom: 1px solid #e0f2fe;
+  color: #0369a1;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #e0f2fe;
+  border-top: 2px solid #0369a1;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.accuracy-indicator {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(10px);
+}
+
+.accuracy-indicator.excellent {
+  color: #10b981;
+}
+
+.accuracy-indicator.good {
+  color: #f59e0b;
+}
+
+.accuracy-indicator.fair {
+  color: #f97316;
+}
+
+.accuracy-indicator.poor {
+  color: #ef4444;
+}
+
+.quality-excellent {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.quality-good {
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.quality-fair {
+  color: #f97316;
+  font-weight: 600;
+}
+
+.quality-poor {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+/* Enhanced mobile responsiveness */
+@media (max-width: 768px) {
+  .accuracy-indicator {
+    font-size: 0.75rem;
+    padding: 0.15rem 0.5rem;
+  }
+
+  .loading-indicator {
+    padding: 0.75rem;
+  }
+}
+`;
+
+// Inject styles
+if (typeof document !== "undefined") {
+  const styleElement = document.createElement("style");
+  styleElement.textContent = styles;
+  document.head.appendChild(styleElement);
+}
