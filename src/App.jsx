@@ -74,11 +74,23 @@ const Toast = ({ message, type, onClose }) => {
     };
   }, [onClose]);
 
+  const typeClasses = {
+    info: "border-l-4 border-blue-500",
+    success: "border-l-4 border-green-500",
+    warning: "border-l-4 border-yellow-500",
+    error: "border-l-4 border-red-500",
+  };
+
   return (
-    <div className={`toast ${type}`} onClick={onClose}>
-      <div className="toast-content">
-        <span className="toast-message">{message}</span>
-        <button className="toast-close">×</button>
+    <div
+      className={`bg-white rounded-lg shadow-lg overflow-hidden cursor-pointer transform translate-x-full animate-slide-in min-w-[300px] ${typeClasses[type]}`}
+      onClick={onClose}
+    >
+      <div className="p-4 flex justify-between items-center">
+        <span className="text-sm text-gray-700 flex-1">{message}</span>
+        <button className="bg-transparent border-none text-xl text-gray-400 cursor-pointer p-0 w-6 h-6 flex items-center justify-center rounded-full transition-colors hover:bg-gray-100 hover:text-gray-700">
+          ×
+        </button>
       </div>
     </div>
   );
@@ -87,7 +99,7 @@ const Toast = ({ message, type, onClose }) => {
 // Toast Container with improved management
 const ToastContainer = ({ toasts, removeToast }) => {
   return (
-    <div className="toast-container">
+    <div className="fixed top-[100px] right-5 z-[10000] flex flex-col gap-2.5 max-w-[400px] md:top-[120px] md:right-2.5 md:left-2.5 md:max-w-none">
       {toasts.map((toast) => (
         <Toast
           key={toast.id}
@@ -102,14 +114,14 @@ const ToastContainer = ({ toasts, removeToast }) => {
 
 // Loading indicator component
 const LoadingIndicator = ({ message }) => (
-  <div className="loading-indicator">
-    <div className="spinner"></div>
+  <div className="flex items-center justify-center gap-2.5 p-4 bg-blue-50 border-b border-blue-200 text-blue-700 md:p-3">
+    <div className="w-5 h-5 border-2 border-blue-200 border-t-blue-700 rounded-full animate-spin"></div>
     <span>{message}</span>
   </div>
 );
 
 // Component to handle map updates with smooth transitions
-const MapController = ({ position, setMap }) => {
+const MapController = ({ position }) => {
   const map = useMap();
   const prevPositionRef = useRef(null);
 
@@ -117,7 +129,6 @@ const MapController = ({ position, setMap }) => {
     if (position && map) {
       const prevPosition = prevPositionRef.current;
 
-      // Smooth pan if position changed significantly
       if (prevPosition) {
         const distance = turf.distance(
           [prevPosition.lng, prevPosition.lat],
@@ -126,7 +137,6 @@ const MapController = ({ position, setMap }) => {
         );
 
         if (distance > 50) {
-          // Only pan if moved more than 50m
           map.panTo([position.lat, position.lng]);
         }
       } else {
@@ -135,18 +145,17 @@ const MapController = ({ position, setMap }) => {
 
       prevPositionRef.current = position;
     }
-    setMap(map);
-  }, [position, map, setMap]);
+  }, [position, map]);
 
   return null;
 };
 
-// Enhanced location filter class
+// Enhanced location filter class (unchanged)
 class LocationFilter {
   constructor() {
     this.readings = [];
     this.maxReadings = 5;
-    this.accuracyThreshold = 100; // meters
+    this.accuracyThreshold = 100;
   }
 
   addReading(position) {
@@ -155,12 +164,10 @@ class LocationFilter {
       timestamp: Date.now(),
     });
 
-    // Keep only recent readings
     if (this.readings.length > this.maxReadings) {
       this.readings.shift();
     }
 
-    // Clean old readings (older than 30 seconds)
     const now = Date.now();
     this.readings = this.readings.filter((r) => now - r.timestamp < 30000);
   }
@@ -168,27 +175,24 @@ class LocationFilter {
   getFilteredPosition() {
     if (this.readings.length === 0) return null;
 
-    // Filter out readings with poor accuracy
     const goodReadings = this.readings.filter(
       (r) => r.accuracy <= this.accuracyThreshold,
     );
 
     if (goodReadings.length === 0) {
-      // If no good readings, use the best available
       const bestReading = this.readings.reduce((best, current) =>
         current.accuracy < best.accuracy ? current : best,
       );
       return bestReading;
     }
 
-    // Use weighted average based on accuracy (better accuracy = higher weight)
     let totalWeight = 0;
     let weightedLat = 0;
     let weightedLng = 0;
     let bestAccuracy = Math.min(...goodReadings.map((r) => r.accuracy));
 
     goodReadings.forEach((reading) => {
-      const weight = 1 / (reading.accuracy + 1); // Higher weight for better accuracy
+      const weight = 1 / (reading.accuracy + 1);
       totalWeight += weight;
       weightedLat += reading.lat * weight;
       weightedLng += reading.lng * weight;
@@ -215,14 +219,11 @@ class LocationFilter {
 
 const App = () => {
   const [position, setPosition] = useState(null);
-  const [rawPosition, setRawPosition] = useState(null);
   const [geoJsonData, setGeoJsonData] = useState(null);
   const [currentPolygon, setCurrentPolygon] = useState(null);
-  const [map, setMap] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [permissionStatus, setPermissionStatus] = useState("unknown");
   const [error, setError] = useState(null);
-  const [isTestMode, setIsTestMode] = useState(false);
   const [geoJsonLoaded, setGeoJsonLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [accuracyQuality, setAccuracyQuality] = useState("unknown");
@@ -232,19 +233,12 @@ const App = () => {
   const locationFilter = useRef(new LocationFilter());
   const toastIdCounter = useRef(0);
 
-  // Test location within one of the polygons
-  const testLocation = {
-    lat: 16.6955,
-    lng: 74.2445,
-    accuracy: 10,
-  };
-
   // Enhanced geolocation options for mobile
   const geoOptions = useMemo(
     () => ({
       enableHighAccuracy: true,
-      timeout: 15000, // Increased timeout for mobile
-      maximumAge: 5000, // Reduced max age for fresher readings
+      timeout: 15000,
+      maximumAge: 5000,
     }),
     [],
   );
@@ -253,7 +247,7 @@ const App = () => {
     () => ({
       enableHighAccuracy: true,
       timeout: 10000,
-      maximumAge: 2000, // Very fresh readings for continuous tracking
+      maximumAge: 2000,
     }),
     [],
   );
@@ -311,11 +305,10 @@ const App = () => {
         const prevPolygon = currentPolygon;
         setCurrentPolygon(polygonIndex);
 
-        // Generate appropriate toast message
         if (polygonIndex === null) {
           if (prevPolygon !== null) {
             addToast(`You have exited Zone ${prevPolygon + 1}`, "warning");
-          } else if (geoJsonLoaded && prevPolygon !== null) {
+          } else if (geoJsonLoaded !== null) {
             addToast("You are outside the monitored zones", "info");
           }
         } else {
@@ -350,16 +343,10 @@ const App = () => {
         timestamp: new Date(newPosition.timestamp).toISOString(),
       });
 
-      // Store raw position for debugging
-      setRawPosition(newPosition);
+      setLocationHistory((prev) => [...prev.slice(-19), newPosition]);
 
-      // Add to location history
-      setLocationHistory((prev) => [...prev.slice(-19), newPosition]); // Keep last 20 positions
-
-      // Add to filter
       locationFilter.current.addReading(newPosition);
 
-      // Get filtered position
       const filteredPosition = locationFilter.current.getFilteredPosition();
 
       if (filteredPosition) {
@@ -395,7 +382,6 @@ const App = () => {
         case error.TIMEOUT:
           message = "Location request timed out";
           suggestion = "Poor signal. Trying again...";
-          // Auto-retry on timeout
           setTimeout(() => requestLocationPermission(), 2000);
           break;
         default:
@@ -420,7 +406,6 @@ const App = () => {
     setIsLoading(true);
     setError(null);
 
-    // Check permission status
     if (navigator.permissions) {
       try {
         const permission = await navigator.permissions.query({
@@ -441,12 +426,10 @@ const App = () => {
       }
     }
 
-    // Clear existing watch
     if (watchId.current) {
       navigator.geolocation.clearWatch(watchId.current);
     }
 
-    // Get initial position
     navigator.geolocation.getCurrentPosition(
       (position) => {
         setPermissionStatus("granted");
@@ -457,23 +440,12 @@ const App = () => {
       geoOptions,
     );
 
-    // Start continuous watching
     watchId.current = navigator.geolocation.watchPosition(
       handlePositionUpdate,
       handleError,
       watchOptions,
     );
   }, [handlePositionUpdate, handleError, geoOptions, watchOptions, addToast]);
-
-  // Test location function
-  const setTestLocation = useCallback(() => {
-    setIsTestMode(true);
-    setPosition(testLocation);
-    setError(null);
-    setIsLoading(false);
-    addToast("Test location activated", "info");
-    updatePolygonStatus(testLocation);
-  }, [addToast, updatePolygonStatus]);
 
   // Load GeoJSON data
   useEffect(() => {
@@ -549,10 +521,10 @@ const App = () => {
 
   // Start location tracking after GeoJSON loads
   useEffect(() => {
-    if (geoJsonLoaded && !isTestMode) {
+    if (geoJsonLoaded) {
       requestLocationPermission();
     }
-  }, [geoJsonLoaded, isTestMode, requestLocationPermission]);
+  }, [geoJsonLoaded, requestLocationPermission]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -598,13 +570,29 @@ const App = () => {
     return "#ef4444";
   };
 
+  const getAccuracyClasses = (quality) => {
+    const classes = {
+      excellent: "text-green-500",
+      good: "text-yellow-500",
+      fair: "text-orange-500",
+      poor: "text-red-500",
+      unknown: "text-gray-500",
+    };
+    return classes[quality] || classes.unknown;
+  };
+
+  const getStatusIndicatorClasses = (status) => {
+    return status === "granted" ? "text-green-400" : "text-red-400";
+  };
+
   return (
-    <div className="app">
-      <div className="header">
-        <h1>GeoFence Monitor</h1>
-        <div className="status">
+    <div className="h-screen flex flex-col bg-gray-100">
+      {/* Header */}
+      <div className="bg-gradient-to-br from-indigo-500 to-purple-600 text-white p-4 flex justify-between items-center shadow-lg z-[1000] md:flex-col md:gap-2 md:text-center">
+        <h1 className="text-2xl font-semibold md:text-xl">GeoFence Monitor</h1>
+        <div className="flex items-center gap-4 md:flex-col md:gap-2">
           <span
-            className={`status-indicator ${permissionStatus === "granted" ? "granted" : "denied"}`}
+            className={`flex items-center text-sm px-3 py-1 bg-white/20 rounded-full backdrop-blur-sm ${getStatusIndicatorClasses(permissionStatus)}`}
           >
             {isLoading
               ? "⏳ Loading..."
@@ -612,43 +600,45 @@ const App = () => {
                 ? "● Location Active"
                 : "● Location Disabled"}
           </span>
-          <span className="zone-status">
+          <span className="text-sm px-3 py-1 bg-white/20 rounded-full backdrop-blur-sm">
             {currentPolygon !== null
               ? `In Zone ${currentPolygon + 1}`
               : "Outside Zone"}
           </span>
           {position && (
-            <span className={`accuracy-indicator ${accuracyQuality}`}>
+            <span
+              className={`text-xs px-2 py-1 rounded-xl bg-white/20 backdrop-blur-sm ${getAccuracyClasses(accuracyQuality)} md:text-xs md:px-2 md:py-1`}
+            >
               {accuracyQuality} ({Math.round(position.accuracy)}m)
             </span>
           )}
         </div>
       </div>
 
+      {/* Error Message */}
       {error && !position && (
-        <div className="error-message">
+        <div className="bg-red-50 text-red-700 p-4 text-center border-b border-red-200">
           <p>{error}</p>
-          <div className="error-actions">
+          <div className="flex gap-2 justify-center mt-2">
             <button
               onClick={requestLocationPermission}
-              className="retry-button"
+              className="border-none px-4 py-2 rounded-md cursor-pointer text-sm bg-red-700 text-white transition-colors hover:bg-red-800"
             >
               Retry Location
             </button>
-            <button onClick={setTestLocation} className="test-button">
-              Use Test Location
-            </button>
           </div>
-          <small>
+          <small className="block mt-2 text-xs opacity-80">
             For best results: Enable high accuracy GPS, ensure good signal, and
             use on mobile device.
           </small>
         </div>
       )}
 
+      {/* Loading Indicator */}
       {isLoading && <LoadingIndicator message="Getting your location..." />}
 
-      <div className="map-container">
+      {/* Map Container */}
+      <div className="flex-1 relative">
         <MapContainer
           center={position ? [position.lat, position.lng] : defaultCenter}
           zoom={16}
@@ -659,7 +649,7 @@ const App = () => {
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           />
 
-          <MapController position={position} setMap={setMap} />
+          <MapController position={position} />
 
           {position && (
             <>
@@ -678,7 +668,9 @@ const App = () => {
                     Accuracy: {Math.round(position.accuracy)}m
                     <br />
                     Quality:{" "}
-                    <span className={`quality-${accuracyQuality}`}>
+                    <span
+                      className={`font-semibold ${getAccuracyClasses(accuracyQuality)}`}
+                    >
                       {accuracyQuality}
                     </span>
                     <br />
@@ -688,19 +680,10 @@ const App = () => {
                       : "Outside Zone"}
                     <br />
                     Readings: {locationHistory.length}
-                    {isTestMode && (
-                      <>
-                        <br />
-                        <small>
-                          <strong>Test Mode Active</strong>
-                        </small>
-                      </>
-                    )}
                   </div>
                 </Popup>
               </Marker>
 
-              {/* Accuracy circle */}
               <Circle
                 center={[position.lat, position.lng]}
                 radius={position.accuracy}
@@ -728,95 +711,3 @@ const App = () => {
 };
 
 export default App;
-
-// Enhanced CSS styles for the improved components
-const styles = `
-/* Additional styles for enhanced components */
-.loading-indicator {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 1rem;
-  background: #f0f9ff;
-  border-bottom: 1px solid #e0f2fe;
-  color: #0369a1;
-}
-
-.spinner {
-  width: 20px;
-  height: 20px;
-  border: 2px solid #e0f2fe;
-  border-top: 2px solid #0369a1;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.accuracy-indicator {
-  font-size: 0.8rem;
-  padding: 0.2rem 0.6rem;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.2);
-  backdrop-filter: blur(10px);
-}
-
-.accuracy-indicator.excellent {
-  color: #10b981;
-}
-
-.accuracy-indicator.good {
-  color: #f59e0b;
-}
-
-.accuracy-indicator.fair {
-  color: #f97316;
-}
-
-.accuracy-indicator.poor {
-  color: #ef4444;
-}
-
-.quality-excellent {
-  color: #10b981;
-  font-weight: 600;
-}
-
-.quality-good {
-  color: #f59e0b;
-  font-weight: 600;
-}
-
-.quality-fair {
-  color: #f97316;
-  font-weight: 600;
-}
-
-.quality-poor {
-  color: #ef4444;
-  font-weight: 600;
-}
-
-/* Enhanced mobile responsiveness */
-@media (max-width: 768px) {
-  .accuracy-indicator {
-    font-size: 0.75rem;
-    padding: 0.15rem 0.5rem;
-  }
-
-  .loading-indicator {
-    padding: 0.75rem;
-  }
-}
-`;
-
-// Inject styles
-if (typeof document !== "undefined") {
-  const styleElement = document.createElement("style");
-  styleElement.textContent = styles;
-  document.head.appendChild(styleElement);
-}
