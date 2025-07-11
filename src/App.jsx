@@ -339,9 +339,6 @@ const App = () => {
         timestamp: new Date(newPosition.timestamp).toISOString(),
       });
 
-      // Store raw position for debugging
-      // setRawPosition(newPosition);
-
       // Add to location history
       setLocationHistory((prev) => [...prev.slice(-19), newPosition]); // Keep last 20 positions
 
@@ -454,84 +451,45 @@ const App = () => {
     );
   }, [handlePositionUpdate, handleError, geoOptions, watchOptions, addToast]);
 
-  // Load GeoJSON data
-  useEffect(() => {
-    const loadGeoJson = () => {
-      try {
-        const data = {
-          type: "FeatureCollection",
-          features: [
-            {
-              type: "Feature",
-              properties: { name: "Zone 1" },
-              geometry: {
-                coordinates: [
-                  [
-                    [74.24006611534955, 16.69505639266292],
-                    [74.2404150186068, 16.694480831953754],
-                    [74.24873054623046, 16.696281774203882],
-                    [74.2485754781163, 16.69691302829385],
-                    [74.24006611534955, 16.69505639266292],
-                  ],
-                ],
-                type: "Polygon",
-              },
-            },
-            {
-              type: "Feature",
-              properties: { name: "Zone 2" },
-              geometry: {
-                coordinates: [
-                  [
-                    [74.24039407113312, 16.69449486015705],
-                    [74.24095213390189, 16.694002243787253],
-                    [74.24888537912818, 16.695794522781497],
-                    [74.24873218542578, 16.696276653441714],
-                    [74.24039407113312, 16.69449486015705],
-                  ],
-                ],
-                type: "Polygon",
-              },
-            },
-            {
-              type: "Feature",
-              properties: { name: "Zone 3" },
-              geometry: {
-                coordinates: [
-                  [
-                    [74.24095213390189, 16.694002243787253],
-                    [74.24161962074032, 16.693488663666102],
-                    [74.24906045764351, 16.695239022902655],
-                    [74.24888537912818, 16.695805003895018],
-                    [74.24095213390189, 16.694002243787253],
-                  ],
-                ],
-                type: "Polygon",
-              },
-            },
-          ],
-        };
+  // Fetch all GeoJSON data from API
+  const fetchGeoJsonData = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `https://twelve-highly-align-later.trycloudflare.com/api/features`,
+      );
 
+      if (!response.ok) {
+        throw new Error("Cannot reach server");
+      }
+
+      const data = await response.json();
+
+      if (data && data.features) {
         setGeoJsonData(data);
         setGeoJsonLoaded(true);
-        console.log("GeoJSON loaded successfully");
+        console.log("GeoJSON loaded successfully from API");
         addToast("Zone data loaded", "success");
-      } catch (error) {
-        console.error("Error loading GeoJSON:", error);
-        setError("Failed to load zone data");
-        addToast("Failed to load zone data", "error");
+      } else {
+        throw new Error("Invalid data format");
       }
-    };
-
-    loadGeoJson();
+    } catch (error) {
+      console.error("Error fetching GeoJSON:", error);
+      setError("Cannot reach server");
+      addToast("Cannot reach server", "error");
+    }
   }, [addToast]);
 
-  // Start location tracking after GeoJSON loads
+  // Load GeoJSON data once on component mount
   useEffect(() => {
-    if (geoJsonLoaded) {
-      requestLocationPermission();
+    if (!geoJsonLoaded) {
+      fetchGeoJsonData();
     }
-  }, [geoJsonLoaded, requestLocationPermission]);
+  }, [geoJsonLoaded, fetchGeoJsonData]);
+
+  // Start location tracking on mount
+  useEffect(() => {
+    requestLocationPermission();
+  }, [requestLocationPermission]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -560,14 +518,11 @@ const App = () => {
   );
 
   // Enhanced popup content
-  const onEachFeature = useCallback(
-    (feature, layer) => {
-      const index = geoJsonData?.features?.indexOf(feature) || 0;
-      const zoneName = feature.properties?.name || `Zone ${index + 1}`;
-      layer.bindPopup(`<strong>${zoneName}</strong><br/>Monitoring Area`);
-    },
-    [geoJsonData],
-  );
+  const onEachFeature = useCallback((feature, layer) => {
+    const zoneName = feature.properties?.name || `Zone ${feature.id}`;
+    const description = feature.properties?.description || "";
+    layer.bindPopup(`<strong>${zoneName}</strong><br/>${description}`);
+  }, []);
 
   const defaultCenter = [16.695, 74.244];
 
@@ -580,7 +535,7 @@ const App = () => {
   return (
     <div className="app">
       <div className="header">
-        <h1>GeoFence Monitor</h1>
+        <h1>🌍 GeoFence </h1>
         <div className="status">
           <span
             className={`status-indicator ${permissionStatus === "granted" ? "granted" : "denied"}`}
